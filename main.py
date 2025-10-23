@@ -1,18 +1,52 @@
-# -*- coding: utf-8 -*-
-from datetime import datetime
-import numpy as np
-import pandas as pd
-import altair as alt
-import streamlit as st
+from pathlib import Path
+import unicodedata
+import glob
 
-# -------------------------------------------------
-# 설정
-# -------------------------------------------------
-st.set_page_config(page_title="송도고 EcoSmartFarm 대시보드", page_icon="🌿", layout="wide")
-st.title("🌿 송도고 EcoSmartFarm 환경·생육 데이터 대시보드")
+# ---------- (1) 견고한 파일 탐색기 ----------
+def resolve_file(preferred_name: str, patterns: list[str]) -> Path:
+    """
+    - preferred_name: 기대 파일명(예: '송도고 환경데이터 통합.csv')
+    - patterns: 대안 패턴들(예: ['*환경데이터*통합*.csv'])
+    현재 스크립트 폴더에서 유니코드 정규화(NFC) 적용 후 탐색.
+    """
+    base = Path(__file__).parent.resolve()
 
-ENV_FILE = "송도고 환경데이터 통합.csv"
-GROW_FILE = "송도고 스마트팜 생육 결과.csv"
+    # 1) 우선 정확 일치 시도 (NFC로 정규화)
+    pref_nfc = unicodedata.normalize("NFC", preferred_name)
+    p = base / pref_nfc
+    if p.exists():
+        return p
+
+    # 2) 폴더 내 파일명을 모두 정규화해 일치 확인
+    for child in base.iterdir():
+        if child.is_file():
+            name_nfc = unicodedata.normalize("NFC", child.name)
+            if name_nfc == pref_nfc:
+                return child
+
+    # 3) 패턴 탐색(여러 후보)
+    for pat in patterns:
+        for hit in base.glob(pat):
+            return hit  # 첫 번째 매치
+
+    # 4) 못 찾으면 폴더 목록 보여주며 에러
+    all_files = [unicodedata.normalize("NFC", c.name) for c in base.iterdir() if c.is_file()]
+    raise FileNotFoundError(
+        f"파일을 찾을 수 없습니다: '{preferred_name}'\n"
+        f"검색 폴더: {base}\n"
+        f"패턴: {patterns}\n"
+        f"현재 폴더 파일: {all_files}"
+    )
+
+# ---------- (2) 여기만 바꾸면 됩니다 ----------
+ENV_FILE = resolve_file(
+    "송도고 환경데이터 통합.csv",
+    patterns=["*환경*통합*.csv", "*환경데이터*통합*.csv", "*환경데이터*.csv"]
+)
+GROW_FILE = resolve_file(
+    "송도고 스마트팜 생육 결과.csv",
+    patterns=["*스마트팜*생육*결과*.csv", "*생육*결과*.csv", "*스마트팜*.csv"]
+)
 
 UNITS = {"temp":"℃","humid":"%","co2":"ppm","ec":"dS/m","ph":"","wt":"℃",
          "length":"cm","wet_weight":"g","dry_weight":"g"}
