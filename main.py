@@ -1,6 +1,8 @@
 from pathlib import Path
 import unicodedata
 import glob
+from __future__ import annotations
+
 
 # ---------- (1) 견고한 파일 탐색기 ----------
 def resolve_file(preferred_name: str, patterns: list[str]) -> Path:
