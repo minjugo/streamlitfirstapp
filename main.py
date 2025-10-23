@@ -1,7 +1,18 @@
-from __future__ import annotations
-from pathlib import Path
+from __future__ import annotations  # ← 맨 첫 줄에 두세요 (타입힌트 지연평가로 NameError 방지)
+
 import unicodedata
-import glob
+from pathlib import Path
+from datetime import datetime
+
+import pandas as pd
+import numpy as np
+import altair as alt
+
+try:
+    import streamlit as st            # ← 반드시 필요
+except Exception as e:
+    raise RuntimeError("Streamlit import 실패. requirements.txt에 streamlit이 있는지 확인하세요.") from e
+
 
 # ---------- (1) 견고한 파일 탐색기 ----------
 def resolve_file(preferred_name: str, patterns: list[str]) -> Path:
