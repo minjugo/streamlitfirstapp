@@ -189,13 +189,33 @@ def parse_env_csv(path: str) -> pd.DataFrame:
 
 
 def load_growth_csv(path: str) -> pd.DataFrame:
-    df = read_csv_kr(path)  # ← 인코딩 자동 처리
-    df = df.loc[:, ~df.columns.str.contains("^Unnamed")]
+    # 1) 인코딩 자동 처리로 읽기
+    df = read_csv_kr(path)
+
+    # 2) 모든 컬럼명을 문자열로 통일 (숫자/None 대비)
+    df.columns = [str(c).strip() for c in df.columns.tolist()]
+
+    # 3) 엑셀→CSV 변환 시 생기는 'Unnamed' 계열 컬럼 제거 (실패해도 안전)
+    try:
+        df = df.loc[:, ~pd.Index(df.columns).str.contains(r"^Unnamed", regex=True)]
+    except Exception:
+        # 혹시라도 str.contains가 또 막히면 수동 필터로 대체
+        df = df[[c for c in df.columns if not str(c).startswith("Unnamed")]]
+
+    # 4) 표준 컬럼명으로 통일
     df = standardize_columns(df)
-    for c in ["length","leaves","wet_weight","dry_weight"]:
+
+    # 5) 숫자형 변환
+    for c in ["length", "leaves", "wet_weight", "dry_weight"]:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    # (선택) date 컬럼이 문자열/숫자여도 날짜로 변환 시도
+    if "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+
     return df
+
 
 
 # =========================================================
