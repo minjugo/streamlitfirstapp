@@ -1,4 +1,4 @@
-# main.py (final, no-duplicate-id + 4-section + axis fix)
+# main.py (final - column-flex for your uploaded files)
 # -*- coding: utf-8 -*-
 import io, math
 import streamlit as st
@@ -15,67 +15,87 @@ st.subheader("4개교 공동 실험 결과 분석")
 alt.data_transformers.disable_max_rows()
 
 SCHOOL_KEYS = ["송도고", "하늘고", "아라고", "동산고"]
-EC_MAP = {"송도고":1, "하늘고":2, "아라고":4, "동산고":8}
-COLOR_MAP = {"송도고":"#8bb8ff", "하늘고":"#88d4a9", "아라고":"#ffd66b", "동산고":"#ff9b9b"}  # 파스텔
+EC_MAP = {"송도고": 1, "하늘고": 2, "아라고": 4, "동산고": 8}
+COLOR_MAP = {
+    "송도고": "#8bb8ff",
+    "하늘고": "#88d4a9",
+    "아라고": "#ffd66b",
+    "동산고": "#ff9b9b",
+}
+
+# --------------------------
+# Helpers
+# --------------------------
+def infer_school(name: str):
+    low = (name or "").lower()
+    if "송도" in low: return "송도고"
+    if "하늘" in low: return "하늘고"
+    if "아라" in low: return "아라고"
+    if "동산" in low: return "동산고"
+    return None
+
+def _norm(s: str) -> str:
+    # lower + remove spaces/symbols
+    return "".join(ch for ch in str(s).strip().lower() if ch.isalnum())
+
+def _pick_col(df: pd.DataFrame, candidates):
+    # candidates: list of possible column names (KR/EN)
+    norm_map = {_norm(c): c for c in df.columns}
+    for cand in candidates:
+        key = _norm(cand)
+        if key in norm_map:
+            return norm_map[key]
+    return None
 
 # --------------------------
 # Sidebar: upload & mapping
 # --------------------------
 with st.sidebar:
     st.header("📁 파일 업로드")
-    # ① 업로더에 고유 key 지정
     env_files = st.file_uploader(
         "환경 CSV 4개",
         type=["csv"],
         accept_multiple_files=True,
-        help="각 학교별 CSV 1개 (timestamp, temperature, humid, ec, ph, co2)",
-        key="uploader_env_csvs"
+        help="각 학교별 CSV 1개 (time, temperature, humidity, ph, ec)",
+        key="uploader_env_csvs",
     )
     growth_file = st.file_uploader(
         "생육 결과 엑셀(.xlsx)",
         type=["xlsx"],
         help="시트명: 송도고/하늘고/아라고/동산고",
-        key="uploader_growth_xlsx"
+        key="uploader_growth_xlsx",
     )
-
-def infer_school(name: str):
-    low = name.lower()
-    if "송도" in low: return "송도고"
-    if "하늘" in low: return "하늘고"
-    if "아라"  in low: return "아라고"
-    if "동산" in low: return "동산고"
-    return None
 
 if env_files:
     st.sidebar.divider()
     st.sidebar.caption("🔗 CSV ↔ 학교 매핑 (자동 실패 시 직접 지정)")
     if "env_sel" not in st.session_state:
         st.session_state.env_sel = {}
-    # ② 매핑용 selectbox 키를 파일명 대신 인덱스 기반으로
+
     for i, f in enumerate(env_files):
         guess = infer_school(f.name) or ""
         st.session_state.env_sel[i] = st.sidebar.selectbox(
             f"파일: {f.name}",
             [""] + SCHOOL_KEYS,
             index=([""] + SCHOOL_KEYS).index(guess) if guess in SCHOOL_KEYS else 0,
-            key=f"sel_env_{i}"   # 인덱스 기반 고정 키
+            key=f"sel_env_{i}",  # index-based stable key
         )
 
 # --------------------------
-# Loader (returns combined + RAW dicts)
+# Loader
 # --------------------------
 @st.cache_data(show_spinner=True)
 def load_from_uploads(env_meta, xlsx_bytes):
     """
     env_meta: [(school, file_bytes), ...]
     return:
-      combined_df: 요약(학교별 평균)
-      raw_env:  dict[school] = 환경 DataFrame(원본)
-      raw_growth: dict[school] = 생육 DataFrame(원본)
+      combined_df: 학교별 평균 요약
+      raw_env:  dict[school] = 환경 원본 df
+      raw_growth: dict[school] = 생육 원본 df
     """
     raw_env, raw_growth = {}, {}
 
-    # ENV
+    # ------------------ ENV ------------------
     env_rows = []
     for school, fb in env_meta:
         bio = io.BytesIO(fb)
@@ -84,18 +104,28 @@ def load_from_uploads(env_meta, xlsx_bytes):
         except Exception:
             bio.seek(0)
             df = pd.read_csv(bio, encoding="cp949")
+
         raw_env[school] = df.copy()
 
-        cols = {c.lower(): c for c in df.columns}
-        need = ["temperature","humid","ec","ph"]
-        for n in need:
-            if n not in cols:
-                raise ValueError(f"[{school}] 환경 CSV 칼럼 누락: {n}")
+        # Uploaded files: time, temperature, humidity, ph, ec
+        c_temp = _pick_col(df, ["temperature", "temp", "온도"])
+        c_hum  = _pick_col(df, ["humidity", "humid", "습도"])
+        c_ec   = _pick_col(df, ["ec", "전기전도도"])
+        c_ph   = _pick_col(df, ["ph", "pH"])
 
-        t = pd.to_numeric(df[cols["temperature"]], errors="coerce").dropna()
-        h = pd.to_numeric(df[cols["humid"]], errors="coerce").dropna()
-        e = pd.to_numeric(df[cols["ec"]], errors="coerce").dropna()
-        p = pd.to_numeric(df[cols["ph"]], errors="coerce").dropna()
+        missing = []
+        if not c_temp: missing.append("temperature")
+        if not c_hum:  missing.append("humidity")
+        if not c_ec:   missing.append("ec")
+        if not c_ph:   missing.append("ph")
+        if missing:
+            raise ValueError(f"[{school}] 환경 CSV 칼럼 누락: {', '.join(missing)}")
+
+        t = pd.to_numeric(df[c_temp], errors="coerce").dropna()
+        h = pd.to_numeric(df[c_hum],  errors="coerce").dropna()
+        e = pd.to_numeric(df[c_ec],   errors="coerce").dropna()
+        p = pd.to_numeric(df[c_ph],   errors="coerce").dropna()
+
         # pH 스케일 보정 (/100)
         if len(p) and p.mean() > 100:
             p = p / 100.0
@@ -105,13 +135,15 @@ def load_from_uploads(env_meta, xlsx_bytes):
             "평균 온도": t.mean() if len(t) else math.nan,
             "평균 습도": h.mean() if len(h) else math.nan,
             "평균 EC(측정)": e.mean() if len(e) else math.nan,
-            "평균 pH": p.mean() if len(p) else math.nan
+            "평균 pH": p.mean() if len(p) else math.nan,
         })
+
     env_df = pd.DataFrame(env_rows)
 
-    # GROWTH
+    # ------------------ GROWTH ------------------
     if xlsx_bytes is None:
         raise ValueError("생육 엑셀(.xlsx) 업로드 필요")
+
     bio = io.BytesIO(xlsx_bytes)
 
     g_rows = []
@@ -120,19 +152,26 @@ def load_from_uploads(env_meta, xlsx_bytes):
         bio.seek(0)
         raw_growth[s] = gdf.copy()
 
-        if "생중량(g)" in gdf.columns:  # 아라고: 총 생중량만
-            w = pd.to_numeric(gdf["생중량(g)"], errors="coerce").mean()
-            l = math.nan
-            leaf = math.nan
-        else:
-            for c in ["지상부 생중량(g)","지상부 길이(cm)","잎 수(장)"]:
-                if c not in gdf.columns:
-                    raise ValueError(f"[{s}] 생육 칼럼 누락: {c}")
-            w = pd.to_numeric(gdf["지상부 생중량(g)"], errors="coerce").mean()
-            l = pd.to_numeric(gdf["지상부 길이(cm)"], errors="coerce").mean()
-            leaf = pd.to_numeric(gdf["잎 수(장)"], errors="coerce").mean()
+        # Uploaded file columns:
+        # 생중량(g), 지상부 길이(mm), 잎 수(장)
+        need = ["생중량(g)", "지상부 길이(mm)", "잎 수(장)"]
+        for c in need:
+            if c not in gdf.columns:
+                raise ValueError(f"[{s}] 생육 칼럼 누락: {c}")
 
-        g_rows.append({"학교": s, "평균 생중량(g)": w, "평균 길이(cm)": l, "평균 잎 수": leaf})
+        w = pd.to_numeric(gdf["생중량(g)"], errors="coerce").mean()
+        l_mm = pd.to_numeric(gdf["지상부 길이(mm)"], errors="coerce").mean()
+        leaf = pd.to_numeric(gdf["잎 수(장)"], errors="coerce").mean()
+
+        # mm -> cm
+        l_cm = l_mm / 10.0 if pd.notna(l_mm) else math.nan
+
+        g_rows.append({
+            "학교": s,
+            "평균 생중량(g)": w,
+            "평균 길이(cm)": l_cm,
+            "평균 잎 수": leaf,
+        })
 
     g = pd.DataFrame(g_rows)
     g["EC(설정)"] = g["학교"].map(EC_MAP)
@@ -147,7 +186,6 @@ def load_from_uploads(env_meta, xlsx_bytes):
 env_meta = []
 if env_files:
     used = set()
-    # ③ env_meta 구성도 인덱스 기반으로
     for i, f in enumerate(env_files):
         sch = st.session_state.env_sel.get(i) or infer_school(f.name)
         if sch and sch not in used:
@@ -159,6 +197,7 @@ if env_files:
 # --------------------------
 data = raw_env = raw_growth = None
 err = None
+
 if env_meta and growth_file is not None:
     try:
         data, raw_env, raw_growth = load_from_uploads(env_meta, growth_file.getvalue())
@@ -180,8 +219,10 @@ else:
         st.header("🔬 데이터 필터")
         school_opts = ["전체","송도고(EC1)","하늘고(EC2)","아라고(EC4)","동산고(EC8)"]
         sel_schools = st.multiselect("학교 선택(복수 가능)", school_opts, default=["전체"])
+
         env_opts = ["온도","습도","EC","pH"]
         sel_env = st.multiselect("환경 변수", env_opts, default=["온도","습도","EC"])
+
         metric_opts = ["지상부 생중량","잎 수","지상부 길이"]
         sel_metric = st.selectbox("생육 지표", metric_opts, index=0)
 
@@ -200,9 +241,15 @@ else:
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("총 학교 수", f"{len(filtered):,}")
     c2.metric("평균 생중량", f"{filtered['평균 생중량(g)'].mean():.2f} g")
-    best = filtered.loc[filtered["평균 생중량(g)"].idxmax()]
-    c3.metric("최고 EC 농도 (생중량 기준)", f"EC {int(best['EC(설정)'])}")
-    c4.metric("최고 생중량", f"{best['평균 생중량(g)']:.2f} g")
+
+    # idxmax on NaN-safe
+    if filtered["평균 생중량(g)"].notna().any():
+        best = filtered.loc[filtered["평균 생중량(g)"].idxmax()]
+        c3.metric("최고 EC 농도 (생중량 기준)", f"EC {int(best['EC(설정)'])}")
+        c4.metric("최고 생중량", f"{best['평균 생중량(g)']:.2f} g")
+    else:
+        c3.metric("최고 EC 농도 (생중량 기준)", "-")
+        c4.metric("최고 생중량", "-")
 
     st.markdown("---")
 
@@ -212,16 +259,19 @@ else:
     tab1, tab2 = st.tabs(["📊 생육 결과", "🌡️ 환경 분석"])
 
     # 공통 tidy
-    tidy = filtered[["학교","EC(설정)","평균 생중량(g)","평균 잎 수","평균 길이(cm)","color"]].copy()
+    tidy = filtered[[
+        "학교","EC(설정)","평균 생중량(g)","평균 잎 수","평균 길이(cm)","color"
+    ]].copy()
 
     # ---------- TAB 1: 생육 결과 (4 섹션) ----------
     with tab1:
         g1, g2 = st.columns(2)
         g3, g4 = st.columns(2)
 
-        # 섹션 1: 차트 1 — EC vs 선택 지표 (꺾은선 + ★)
+        # 섹션 1: EC vs 선택 지표 (꺾은선 + ★)
         metric_map = {"지상부 생중량":"평균 생중량(g)","잎 수":"평균 잎 수","지상부 길이":"평균 길이(cm)"}
         ycol = metric_map[sel_metric]
+
         ln_df = tidy.sort_values("EC(설정)").dropna(subset=[ycol])
         ln_df["is_max"] = (ln_df[ycol] == ln_df[ycol].max()) if not ln_df.empty else False
 
@@ -241,42 +291,55 @@ else:
         with g1:
             st.altair_chart(line + star, use_container_width=True)
 
-        # 섹션 2: 차트 2 — 학교별 TOP 4 (가로 막대)
-        bar_df = tidy[["학교","color",ycol]].dropna().sort_values(ycol, ascending=False)
+        # 섹션 2: 학교별 TOP 4 (가로 막대)
+        bar_df = tidy[["학교", ycol]].dropna().sort_values(ycol, ascending=False)
+
         bar = alt.Chart(bar_df).mark_bar(cornerRadius=6).encode(
             x=alt.X(f"{ycol}:Q", title=sel_metric),
-            y=alt.Y("학교:N", sort="-x", title=None,
-                    axis=alt.Axis(labelAngle=0, labelLimit=200)),
-            color=alt.Color("학교:N",
-                scale=alt.Scale(range=[data[data['학교']=='송도고']['color'].iloc[0],
-                                       data[data['학교']=='하늘고']['color'].iloc[0],
-                                       data[data['학교']=='아라고']['color'].iloc[0],
-                                       data[data['학교']=='동산고']['color'].iloc[0]]),
-                legend=None),
+            y=alt.Y("학교:N", sort="-x", title=None, axis=alt.Axis(labelAngle=0, labelLimit=200)),
+            color=alt.Color(
+                "학교:N",
+                scale=alt.Scale(domain=SCHOOL_KEYS, range=[COLOR_MAP[s] for s in SCHOOL_KEYS]),
+                legend=None
+            ),
             tooltip=[alt.Tooltip("학교:N"), alt.Tooltip(f"{ycol}:Q", format=".2f")]
         )
-        text = bar.mark_text(align='left', dx=6, color="#3a4762").encode(
+        text = bar.mark_text(align="left", dx=6, color="#3a4762").encode(
             text=alt.Text(f"{ycol}:Q", format=".2f")
         )
+
         with g2:
             st.altair_chart((bar + text).properties(title="차트 2 · 학교별 TOP 4", height=330),
                             use_container_width=True)
 
-        # 섹션 3: 차트 3 — 3지표 정규화 (0-100), x축 학교명 세로 회전 방지
-        norm_cols = ["평균 생중량(g)","평균 잎 수","평균 길이(cm)"]
-        ndf = tidy[["학교","color"] + norm_cols].copy()
+        # 섹션 3: 3지표 정규화 (0-100) + x축 회전 방지
+        norm_cols = ["평균 생중량(g)", "평균 잎 수", "평균 길이(cm)"]
+        ndf = tidy[["학교"] + norm_cols].copy()
+
         for c in norm_cols:
             cmax = ndf[c].max(skipna=True)
-            ndf[c+"_점수"] = (ndf[c] / cmax * 100).where(pd.notna(ndf[c]), None)
+            ndf[c + "_점수"] = (ndf[c] / cmax * 100).where(pd.notna(ndf[c]), None) if pd.notna(cmax) and cmax != 0 else None
 
-        tnorm = ndf.melt(id_vars=["학교","color"], value_vars=[c+"_점수" for c in norm_cols],
-                         var_name="지표", value_name="점수").dropna()
+        tnorm = ndf.melt(
+            id_vars=["학교"],
+            value_vars=[c + "_점수" for c in norm_cols],
+            var_name="지표",
+            value_name="점수"
+        ).dropna()
+
+        # 보기 좋게 지표명 정리
+        pretty = {
+            "평균 생중량(g)_점수": "생중량",
+            "평균 잎 수_점수": "잎 수",
+            "평균 길이(cm)_점수": "길이"
+        }
+        tnorm["지표"] = tnorm["지표"].map(pretty).fillna(tnorm["지표"])
 
         chart3 = alt.Chart(tnorm).mark_bar(cornerRadiusTopLeft=6, cornerRadiusTopRight=6).encode(
             x=alt.X("학교:N", title=None, sort=SCHOOL_KEYS,
                     axis=alt.Axis(labelAngle=0, labelOverlap=False, labelLimit=200)),
             y=alt.Y("점수:Q", title="정규화 점수(0-100)"),
-            color=alt.Color("지표:N", scale=alt.Scale(range=["#9ec5fe","#a7f3d0","#fde68a"]))
+            color=alt.Color("지표:N", legend=alt.Legend(title=None))
         ).properties(title="차트 3 · 3가지 지표 종합", height=330)
 
         with g3:
@@ -298,7 +361,7 @@ else:
         e1, e2 = st.columns(2)
         e3, e4 = st.columns(2)
 
-        col_temp, col_humid, col_ec = "평균 온도", "평균 습도", "평균 EC(측정)"
+        col_temp, col_humid, col_ec, col_ph = "평균 온도", "평균 습도", "평균 EC(측정)", "평균 pH"
         c_axis = alt.Axis(labelAngle=0, labelOverlap=False, labelPadding=8, labelLimit=200)
 
         # 섹션 1: 평균 EC(측정)
@@ -307,7 +370,8 @@ else:
             x=alt.X("학교:N", sort=SCHOOL_KEYS, axis=c_axis, title=None),
             y=alt.Y(f"{col_ec}:Q", title="평균 EC(측정)")
         ).properties(title="평균 EC(측정)", height=330)
-        with e1: st.altair_chart(chart_ec, use_container_width=True)
+        with e1:
+            st.altair_chart(chart_ec, use_container_width=True)
 
         # 섹션 2: 평균 습도
         df_h = filtered[["학교", col_humid]].copy()
@@ -315,7 +379,8 @@ else:
             x=alt.X("학교:N", sort=SCHOOL_KEYS, axis=c_axis, title=None),
             y=alt.Y(f"{col_humid}:Q", title="평균 습도(%)")
         ).properties(title="평균 습도", height=330)
-        with e2: st.altair_chart(chart_h, use_container_width=True)
+        with e2:
+            st.altair_chart(chart_h, use_container_width=True)
 
         # 섹션 3: 평균 온도
         df_t = filtered[["학교", col_temp]].copy()
@@ -323,7 +388,8 @@ else:
             x=alt.X("학교:N", sort=SCHOOL_KEYS, axis=c_axis, title=None),
             y=alt.Y(f"{col_temp}:Q", title="평균 온도(°C)")
         ).properties(title="평균 온도", height=330)
-        with e3: st.altair_chart(chart_t, use_container_width=True)
+        with e3:
+            st.altair_chart(chart_t, use_container_width=True)
 
         # 섹션 4: RAW · 환경(학교별 10행)
         with e4:
